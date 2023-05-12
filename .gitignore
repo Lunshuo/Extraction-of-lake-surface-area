@@ -1,160 +1,305 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+//imagecollection 
+Map.addLayer(table)
+ var roi = table
+// remove cloud for Landsat 4, 5 and 7
+var rmL457Cloud = function(image) {
+    var qa = image.select('pixel_qa');
+    // If the cloud bit (5) is set and the cloud confidence (7) is high
+    // or the cloud shadow bit is set (3), then it's a bad pixel.
+    var cloud = qa.bitwiseAnd(1 << 5)
+                    .and(qa.bitwiseAnd(1 << 7))
+                    .or(qa.bitwiseAnd(1 << 3));
+    // Remove edge pixels that don't occur in all bands
+    var mask2 = image.mask().reduce(ee.Reducer.min());
+    
+    // remove pixels where the blue reflectance is greater than 0.2
+    var mask3 = image.select('B1').gt(2000);
+    return image.updateMask(cloud.not()).updateMask(mask2).updateMask(mask3.not())
+                .copyProperties(image)
+                .copyProperties(image, ["system:time_start",'system:time_end','system:footprint']);
+  };
+  
+  // reomove cloud for Landsat-8
+  function rmL8Cloud(image) { 
+    var cloudShadowBitMask = (1 << 3); 
+    var cloudsBitMask = (1 << 5); 
+    var qa = image.select('pixel_qa'); 
+    var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0) 
+                   .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+    var mask2 = image.select('B1').gt(2000);
+    return image.updateMask(mask).updateMask(mask2.not())
+                .copyProperties(image)
+                .copyProperties(image, ["system:time_start",'system:time_end']);
+  } 
+  
+  //Landsat-7 ETM+ SCL-off gap fill
+  function l7_fill(image) {
+    return image.focal_mean(1,'circle','pixels',8).blend(image)
+    .copyProperties(image)
+}
 
-# C extensions
-*.so
+//  var l7_col= ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").map(l7_fill)
+  
+  var l8_sr = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR").map(rmL8Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10))
+              
+  var l7_sr = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").map(rmL457Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10))
+              
+  var l5_sr = ee.ImageCollection("LANDSAT/LT05/C01/T1_SR").map(rmL457Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10))
+              
+  
+  function calcWater(image) {
+    var MNDWI = image.select("MNDWI");
+    var NDWI = image.select("MNDWI");
+    var NDVI = image.select("NDVI");
+    var EVI = image.select("EVI");
+    var water = NDWI.gt(0)
+                   .and(MNDWI.gt(0.1)//MNDWI>NDVI
+                   .and(EVI.lt(0.1))
+                   .and(MNDWI.gt(NDVI))
+                   .or(MNDWI.gt(EVI)));
+     var dem = ee.Image("USGS/GMTED2010").select(0)
+     var azimuth = ee.Number(image.get('SUN_AZIMUTH'))
+     var ele = ee.Number(image.get('SUN_ELEVATION'))
+     var shadow = ee.Algorithms.HillShadow(dem, azimuth, ele).eq(1)
+    return image.addBands(water.rename("water")).updateMask(shadow);
+  }
+  
+  
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+  var Landsat57 = {
+    scaleImage: function(image) {
+      var time_start = image.get("system:time_start");
+      var SUN_AZIMUTH = image.get('SOLAR_AZIMUTH_ANGLE') 
+      var SUN_ELEVATION = image.get('SOLAR_ZENITH_ANGLE')
+      image = image.select(["B1","B2","B3","B4","B5","B7"]);
+      image = image.divide(10000);
+      image = image.set("system:time_start", time_start)
+                  .set("SUN_AZIMUTH",SUN_AZIMUTH )
+                   .set("SUN_ELEVATION", SUN_ELEVATION)
+      return image;
+    },
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+    srCloudMask: function(image) {
+      var qa = image.select('pixel_qa');
+      var cloudShadowBitMask = (1 << 3);
+      var snowBitMask = (1 << 4);
+      var cloudsBitMask = (1 << 5);
+      var mask1 = qa.bitwiseAnd(cloudsBitMask).eq(0)
+                    .and(qa.bitwiseAnd(snowBitMask).eq(0))
+                    .and(qa.bitwiseAnd(cloudShadowBitMask).eq(0));
+      var mask2 = image.mask().reduce(ee.Reducer.min());
+      return image.updateMask(mask1.and(mask2));
+    },
+  
+    //NDVI
+    NDVI: function(image) {
+        return image.addBands(image.normalizedDifference(["B4", "B3"])
+                                   .rename("NDVI"));
+    },
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+    NDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B2", "B4"])
+                                   .rename("NDWI"));
+    },
+    //MNDWI
+    MNDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B2", "B5"])
+                                   .rename("MNDWI"));
+    },
+  
+    // EVI
+    EVI: function(image) {
+      var evi = image.expression("EVI = 2.5 * (NIR - R) / (NIR + 6*R -7.5*B + 1)", {
+        NIR: image.select("B4"),
+        R: image.select("B3"),
+        B: image.select("B1")
+      });
+      return image.addBands(evi);
+    },
+  
+    getL5SRCollection : function(startDate, endDate, region) {
+      var dataset = l5_sr.filterDate(startDate, endDate)
+                        .filterBounds(region)
+                        .map(Landsat57.srCloudMask)
+                        .map(Landsat57.scaleImage)
+                        .map(Landsat57.NDVI)
+                        .map(Landsat57.MNDWI)
+                        .map(Landsat57.NDWI)
+                        .map(Landsat57.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    },
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+    getL7SRCollection : function(startDate, endDate, region) {
+      var dataset = l7_sr.filterDate(startDate, endDate)
+                        .filterBounds(region)
+                        .map(Landsat57.srCloudMask)
+                        .map(l7_fill)
+                        .map(Landsat57.scaleImage)
+                        .map(Landsat57.NDVI)
+                        .map(Landsat57.NDWI)
+                        .map(Landsat57.MNDWI)
+                        .map(Landsat57.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    }
+  };
+  
 
-# Translations
-*.mo
-*.pot
+  var Landsat8 = {
+      scaleImage: function(image) {
+      var time_start = image.get("system:time_start");
+      var SUN_AZIMUTH = image.get('SOLAR_AZIMUTH_ANGLE') 
+      var SUN_ELEVATION = image.get('SOLAR_ZENITH_ANGLE')
+     image = image.select(["B2","B3","B4","B5","B6","B7"]);
+      image = image.divide(10000);
+      image = image.set("system:time_start", time_start)
+                   .set("SUN_AZIMUTH",SUN_AZIMUTH )
+                   .set("SUN_ELEVATION", SUN_ELEVATION)
+                  // .divide(10000)
+      return image;
+    },
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+    srCloudMask: function(image) {
+      var cloudShadowBitMask = (1 << 3);
+      var snowBitMask = (1 << 4);
+      var cloudsBitMask = (1 << 5);
+      var qa = image.select('pixel_qa');
+      var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                   .and(qa.bitwiseAnd(snowBitMask).eq(0))
+                   .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+      return image.updateMask(mask);
+    },
 
-# Flask stuff:
-instance/
-.webassets-cache
+    NDVI: function(image) {
+        return image.addBands(image.normalizedDifference(["B5", "B4"])
+                                   .rename("NDVI"));
+    },
+     NDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B3", "B5"])
+                                   .rename("NDWI"));
+    }, 
 
-# Scrapy stuff:
-.scrapy
+    MNDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B3", "B6"])
+                                   .rename("MNDWI"));
+    },
+  
+    EVI: function(image) {
+      var evi = image.expression("EVI = 2.5 * (NIR - R) / (NIR + 6*R -7.5*B + 1)", {
+        NIR: image.select("B5"),
+        R: image.select("B4"),
+        B: image.select("B2")
+      });
+      return image.addBands(evi);
+    },
+  
+    getL8SRCollection : function(startDate, endDate, roi) {
+      var dataset = l8_sr.filterDate(startDate, endDate)
+                        .filterBounds(roi)
+                        .map(Landsat8.srCloudMask)
+                        .map(Landsat8.scaleImage)
+                        .map(Landsat8.NDVI)
+                        .map(Landsat8.MNDWI)
+                        .map(Landsat57.NDWI)
+                        .map(Landsat8.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    }
+  };
+  
+  //export
+  function exportImageToDrive(image, key, region) {
+    Export.image.toDrive({
+      image: image, 
+      description: "Drive-"+key,
+      fileNamePrefix: key, 
+      region: region,
+      scale: 30,
+      maxPixels: 1e13
+    });
+  }
+  
+  function removeShadow(image, region) {
+    var hand = ee.ImageCollection('USGS/SRTMGL1_003');
+    var hand30 = hand.mosaic().focal_mean(0.1).rename('elevation');
+    var hillShadowMask = hand30.select('elevation').lte(50);
+    var waterMask = image.updateMask(hillShadowMask.and(image.gte(0.8)))
+                         .gte(0.25)
+                         .clip(region);
+    waterMask = waterMask.connectedPixelCount(2, true);
+    waterMask = waterMask.updateMask(waterMask.gte(2));
+    return image.updateMask(waterMask);
+  }
+  
+  function processYearWaterImage(year, region) {
+  var startDate = ee.Date.fromYMD(year, 1, 1);
+  var endDate = ee.Date.fromYMD(year+1, 1, 1);
+  var l5Water = Landsat57.getL5SRCollection(startDate, endDate, region);
+  var l7Water = Landsat57.getL7SRCollection(startDate, endDate, region);
+  var l8Water = Landsat8.getL8SRCollection(startDate, endDate, region);
+  var waterImgs = l5Water.merge(l7Water).merge(l8Water)
+  print('waterImgs_'+year,waterImgs);
+    
+    var waterImg = waterImgs.sum()
+                            .divide(waterImgs.count())
+                            .clip(region);
+    var hand = ee.ImageCollection('users/gena/global-hand/hand-100');
+    var hand30 = hand.mosaic().focal_mean(0.1).rename('elevation');
+    var hillShadowMask = hand30.select('elevation').lte(50);
+    var dem = ee.Image("USGS/GMTED2010").select(0)
+    var slope = ee.Terrain.slope(dem);
+    
+    waterImg = waterImg.updateMask(hillShadowMask).updateMask(slope.lt(20));//mask外 is NoData
+    // waterImg = removeShadow(waterImg,roi);
+    waterImg = waterImg.unmask(0).clip(region);
+    // var nonWater = waterImg.select([0]).lte(0.25)
+    // var seasonWater = waterImg.select([0]).gt(0.25).and(waterImg.select([0]).lte(0.75))
+    // var water = waterImg.select([0]).gt(0.75).and(waterImg.select([0]).lte(0.1)
+    waterImg = waterImg.where(waterImg.select([0]).gt(0).and(waterImg.select([0]).lte(0.25)),0)
+                      .where(waterImg.select([0]).gt(0.25).and(waterImg.select([0]).lte(0.75)),1)
+                      .where(waterImg.select([0]).gt(0.75).and(waterImg.select([0]).lte(1)),2)
+                      .toUint8()
+                      .clip(roi)
+    
 
-# Sphinx documentation
-docs/_build/
+    var seasonWaterArea = waterImg.eq(1).multiply(ee.Image.pixelArea()).reduceRegion({
+                          reducer : ee.Reducer.sum(),
+                          geometry: roi,
+                          scale: 100,
+                          tileScale: 16,
+                          maxPixels: 1e13
+      })
+    var pureWaterArea = waterImg.eq(2).multiply(ee.Image.pixelArea()).reduceRegion({
+                          reducer : ee.Reducer.sum(),
+                          geometry: roi,
+                          scale: 100,
+                          tileScale: 16,
+                          maxPixels: 1e13
+    })
+    print( "seasonWaterArea-"+year+"m2", seasonWaterArea)
+    print( "pureWaterArea-"+year+"m2", pureWaterArea)
+    
+    var key = "landsatWater-"+year;
+    Map.addLayer(waterImg, {min:0,max:2,palette:['ffffff','red','blue']}, "water"+key, true);
+    exportImageToDrive(waterImg, key, region);
+  
+  }
+  
 
-# PyBuilder
-.pybuilder/
-target/
+  function main() {
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/#use-with-ide
-.pdm.toml
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+    var startYear =2020;
+    var endYear = 2020;
+  for (var year=startYear; year<=endYear; year++) {
+    processYearWaterImage(year, roi);
+    }
+  }
+  
+  main();
