@@ -1,25 +1,24 @@
 //imagecollection 
 Map.addLayer(table)
  var roi = table
-// remove cloud for Landsat 4, 5 and 7
+
 var rmL457Cloud = function(image) {
     var qa = image.select('pixel_qa');
-    // If the cloud bit (5) is set and the cloud confidence (7) is high
-    // or the cloud shadow bit is set (3), then it's a bad pixel.
+
     var cloud = qa.bitwiseAnd(1 << 5)
                     .and(qa.bitwiseAnd(1 << 7))
                     .or(qa.bitwiseAnd(1 << 3));
-    // Remove edge pixels that don't occur in all bands
+
     var mask2 = image.mask().reduce(ee.Reducer.min());
     
-    // remove pixels where the blue reflectance is greater than 0.2
+
     var mask3 = image.select('B1').gt(2000);
     return image.updateMask(cloud.not()).updateMask(mask2).updateMask(mask3.not())
                 .copyProperties(image)
                 .copyProperties(image, ["system:time_start",'system:time_end','system:footprint']);
   };
   
-  // reomove cloud for Landsat-8
+
   function rmL8Cloud(image) { 
     var cloudShadowBitMask = (1 << 3); 
     var cloudsBitMask = (1 << 5); 
@@ -32,13 +31,13 @@ var rmL457Cloud = function(image) {
                 .copyProperties(image, ["system:time_start",'system:time_end']);
   } 
   
-  //Landsat-7 ETM+ SCL-off gap fill
+
   function l7_fill(image) {
     return image.focal_mean(1,'circle','pixels',8).blend(image)
     .copyProperties(image)
 }
 
-//  var l7_col= ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").map(l7_fill)
+
   
   var l8_sr = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR").map(rmL8Cloud)
               .filter(ee.Filter.lte('CLOUD_COVER',10))
@@ -94,7 +93,7 @@ var rmL457Cloud = function(image) {
       return image.updateMask(mask1.and(mask2));
     },
   
-    //NDVI
+
     NDVI: function(image) {
         return image.addBands(image.normalizedDifference(["B4", "B3"])
                                    .rename("NDVI"));
@@ -104,13 +103,13 @@ var rmL457Cloud = function(image) {
         return image.addBands(image.normalizedDifference(["B2", "B4"])
                                    .rename("NDWI"));
     },
-    //MNDWI
+
     MNDWI: function(image) {
         return image.addBands(image.normalizedDifference(["B2", "B5"])
                                    .rename("MNDWI"));
     },
   
-    // EVI
+
     EVI: function(image) {
       var evi = image.expression("EVI = 2.5 * (NIR - R) / (NIR + 6*R -7.5*B + 1)", {
         NIR: image.select("B4"),
@@ -214,7 +213,7 @@ var rmL457Cloud = function(image) {
     }
   };
   
-  //export
+
   function exportImageToDrive(image, key, region) {
     Export.image.toDrive({
       image: image, 
